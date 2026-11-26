@@ -140,7 +140,8 @@ fn preflight_report(
     doc_uri: &String,
 ) -> Result<(), LedgerError> {
     f.ledger
-        .can_post_report(reporter, sac, &amount, &as_of, &hash(&f.env, 42), doc_uri)
+        .can_post_report(reporter, sac, &amount, &as_of, &hash(&f.env, 42), doc_uri);
+    Ok(())
 }
 
 // ---- list_asset -----------------------------------------------------------

@@ -507,7 +507,7 @@ fn validate_post_reserve(
         let mut active_reporters = 0u32;
         for indexed_reporter in index.iter() {
             let report = match legacy.as_ref() {
-                Some(previous) if &previous.reporter == &indexed_reporter => Some(previous.clone()),
+                Some(previous) if previous.reporter == indexed_reporter => Some(previous.clone()),
                 _ => read_persistent::<ReserveReport>(
                     env,
                     &DataKey::ReportBy(sac.clone(), tier, indexed_reporter.clone()),
