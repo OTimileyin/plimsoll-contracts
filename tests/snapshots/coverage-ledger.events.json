@@ -71,6 +71,17 @@
       }
     },
     {
+      "name": "reserve_report_retracted",
+      "topics": [
+        "reserve_report_retracted",
+        "<contract>",
+        1
+      ],
+      "data": {
+        "reporter": "<account>"
+      }
+    },
+    {
       "name": "native_supply_enabled",
       "topics": [
         "native_supply_enabled",

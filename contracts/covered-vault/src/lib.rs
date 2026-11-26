@@ -170,6 +170,12 @@ impl CoveredVault {
         balance_of(&env, &of)
     }
 
+    /// Read the live SAC balance held by this vault, without touching vault storage.
+    pub fn get_balance(env: Env) -> i128 {
+        let cfg = config(&env);
+        token::TokenClient::new(&env, &cfg.asset).balance(&env.current_contract_address())
+    }
+
     pub fn config(env: Env) -> VaultConfig {
         config(&env)
     }

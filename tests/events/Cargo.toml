@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Snapshot tests that pin the topic and data shape of every coverage-ledger and covered-vault event."
+description = "Snapshot tests that pin the topic and data shape of every Plimsoll contract event."
 
 [lib]
 crate-type = ["rlib"]

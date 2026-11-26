@@ -173,6 +173,15 @@ fn config_round_trips() {
     assert_eq!(cfg.min_tier, Tier::IssuerSigned);
 }
 
+#[test]
+fn get_balance_reads_the_vaults_live_token_reserve() {
+    let f = setup();
+    StellarAssetClient::new(&f.env, &f.sac).mint(&f.vault.address, &17);
+
+    assert_eq!(f.vault.get_balance(), 17);
+    assert_eq!(f.vault.balance(&f.user), 0);
+}
+
 // ---- can_deposit ----------------------------------------------------------
 
 #[test]

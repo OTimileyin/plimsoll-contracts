@@ -210,3 +210,153 @@ fn transfer_admin_without_new_admin_auth_fails() {
     assert!(res.is_err());
     assert_eq!(client.admin(), admin);
 }
+
+#[test]
+fn reporter_can_update_metadata_uri() {
+    let (env, _admin, client) = setup();
+    let reporter = Address::generate(&env);
+    client.set_reporter(&reporter, &Role::Auditor, &String::from_str(&env, "audit"));
+    let uri = String::from_str(&env, "ipfs://reporter-metadata");
+
+    client.update_reporter_uri(&reporter, &uri);
+
+    assert_eq!(env.events().all().events().len(), 2);
+}
+
+#[test]
+fn update_reporter_uri_rejects_unknown_reporter() {
+    let (env, _admin, client) = setup();
+    let reporter = Address::generate(&env);
+    let uri = String::from_str(&env, "ipfs://metadata");
+
+    assert_eq!(
+        client.try_update_reporter_uri(&reporter, &uri),
+        Err(Ok(RegistryError::ReporterNotFound.into()))
+    );
+}
+
+#[test]
+fn update_reporter_uri_rejects_empty_and_long_uris() {
+    let (env, _admin, client) = setup();
+    let reporter = Address::generate(&env);
+    client.set_reporter(&reporter, &Role::Auditor, &String::from_str(&env, "audit"));
+
+    assert_eq!(
+        client.try_update_reporter_uri(&reporter, &String::from_str(&env, "")),
+        Err(Ok(RegistryError::InvalidUri.into()))
+    );
+    assert_eq!(
+        client.try_update_reporter_uri(&reporter, &String::from_str(&env, &"x".repeat(257))),
+        Err(Ok(RegistryError::InvalidUri.into()))
+    );
+}
+
+#[test]
+fn reporter_can_replace_category_tags_and_query_them() {
+    let (env, _admin, client) = setup();
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+    client.set_reporter(&first, &Role::Auditor, &String::from_str(&env, "first"));
+    client.set_reporter(
+        &second,
+        &Role::Transcriber,
+        &String::from_str(&env, "second"),
+    );
+    let bank = soroban_sdk::Symbol::new(&env, "bank");
+    let dex = soroban_sdk::Symbol::new(&env, "dex");
+    let mut first_tags = soroban_sdk::Vec::new(&env);
+    first_tags.push_back(bank.clone());
+    client.update_reporter_tags(&first, &first_tags);
+    let mut second_tags = soroban_sdk::Vec::new(&env);
+    second_tags.push_back(bank.clone());
+    second_tags.push_back(dex.clone());
+    client.update_reporter_tags(&second, &second_tags);
+
+    let bank_reporters = client.get_reporters_by_category(&bank);
+    assert_eq!(bank_reporters.len(), 2);
+    assert_eq!(bank_reporters.get(0), Some(first.clone()));
+    assert_eq!(bank_reporters.get(1), Some(second.clone()));
+
+    let mut replacement = soroban_sdk::Vec::new(&env);
+    replacement.push_back(dex.clone());
+    client.update_reporter_tags(&first, &replacement);
+    assert_eq!(client.get_reporters_by_category(&bank).len(), 1);
+    assert_eq!(client.get_reporters_by_category(&dex).len(), 2);
+    client.revoke(&second);
+    assert_eq!(client.get_reporters_by_category(&bank).len(), 0);
+    assert_eq!(client.get_reporters_by_category(&dex).len(), 1);
+}
+
+#[test]
+fn update_reporter_tags_rejects_unknown_reporter_and_more_than_five() {
+    let (env, _admin, client) = setup();
+    let reporter = Address::generate(&env);
+    let tags = soroban_sdk::Vec::new(&env);
+    assert_eq!(
+        client.try_update_reporter_tags(&reporter, &tags),
+        Err(Ok(RegistryError::ReporterNotFound.into()))
+    );
+
+    client.set_reporter(&reporter, &Role::Auditor, &String::from_str(&env, "audit"));
+    let mut too_many = soroban_sdk::Vec::new(&env);
+    for name in ["bank", "custodian", "dex", "exchange", "fund", "issuer"] {
+        too_many.push_back(soroban_sdk::Symbol::new(&env, name));
+    }
+    assert_eq!(
+        client.try_update_reporter_tags(&reporter, &too_many),
+        Err(Ok(RegistryError::TooManyTags.into()))
+    );
+}
+
+#[test]
+fn update_reporter_tags_rejects_duplicate_tags() {
+    let (env, _admin, client) = setup();
+    let reporter = Address::generate(&env);
+    client.set_reporter(&reporter, &Role::Auditor, &String::from_str(&env, "audit"));
+    let bank = soroban_sdk::Symbol::new(&env, "bank");
+    let mut duplicates = soroban_sdk::Vec::new(&env);
+    duplicates.push_back(bank.clone());
+    duplicates.push_back(bank);
+
+    assert_eq!(
+        client.try_update_reporter_tags(&reporter, &duplicates),
+        Err(Ok(RegistryError::DuplicateTag.into()))
+    );
+}
+
+#[test]
+fn update_reporter_uri_requires_reporter_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let id = env.register(ReporterRegistry, (admin,));
+    let client = ReporterRegistryClient::new(&env, &id);
+    let reporter = Address::generate(&env);
+    client.set_reporter(&reporter, &Role::Auditor, &String::from_str(&env, "audit"));
+    env.mock_auths(&[]);
+
+    let res = client.try_update_reporter_uri(&reporter, &String::from_str(&env, "ipfs://metadata"));
+    assert!(res.is_err());
+    assert_eq!(env.events().all().events().len(), 1);
+}
+
+#[test]
+fn exactly_five_reporter_tags_are_accepted() {
+    let (env, _admin, client) = setup();
+    let reporter = Address::generate(&env);
+    client.set_reporter(&reporter, &Role::Auditor, &String::from_str(&env, "audit"));
+    let mut tags = soroban_sdk::Vec::new(&env);
+    for name in ["bank", "custodian", "dex", "exchange", "fund"] {
+        tags.push_back(soroban_sdk::Symbol::new(&env, name));
+    }
+
+    client.update_reporter_tags(&reporter, &tags);
+
+    assert_eq!(tags.len(), 5);
+    assert_eq!(
+        client
+            .get_reporters_by_category(&soroban_sdk::Symbol::new(&env, "fund"))
+            .len(),
+        1
+    );
+}

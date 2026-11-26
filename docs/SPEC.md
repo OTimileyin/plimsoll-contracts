@@ -128,7 +128,7 @@ All three contracts use the same TTL policy, defined in `plimsoll-types`:
 | --- | --- |
 | `Admin` (instance) | `__constructor`, `transfer_admin`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `set_reporter`, `revoke` |
 | `Reporter(Address)` (persistent) | `set_reporter` (write), `get_reporter` / `role_of` (read), reporter URI and tag updates |
-| `ReporterUri(Address)`, `ReporterTags(Address)`, `Reporters`, `Category(Symbol)` (persistent) | update functions, `set_reporter`, `revoke`, `get_reporters_by_category` |
+| `ReporterUri(Address)`, `ReporterTags(Address)`, `Category(Symbol)` (persistent) | update functions, `revoke`, `get_reporters_by_category` |
 
 **coverage-ledger**
 
@@ -193,7 +193,6 @@ Decides who may speak. Holds no money.
 | `Reporter(Address)` | persistent, TTL extended on write and read | `ReporterInfo` |
 | `ReporterUri(Address)` | persistent, TTL extended on write and read | `String` (optional metadata URI) |
 | `ReporterTags(Address)` | persistent, TTL extended on write and read | `Vec<Symbol>` (at most five tags) |
-| `Reporters` | persistent, TTL extended on write and read | `Vec<Address>` (registered reporter addresses) |
 | `Category(Symbol)` | persistent, TTL extended on write and read | `Vec<Address>` (reporters currently carrying the tag) |
 | `PendingUpgrade` | instance | `PendingUpgrade` |
 

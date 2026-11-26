@@ -44,6 +44,8 @@ enum DataKey {
     NativeSupply(Address),
     /// Maps a deprecated asset SAC to its successor SAC (at most one hop).
     Alias(Address),
+    /// Successful reserve posts minus reporter-initiated retractions.
+    ReporterScore(Address),
 }
 
 #[contracterror]
@@ -67,6 +69,8 @@ pub enum LedgerError {
     UpgradeDelayNotElapsed = 15,
     SelfAlias = 16,
     Paused = 17,
+    ReporterScoreOutOfRange = 18,
+    ReportNotFound = 19,
 }
 
 #[contractevent]
@@ -101,6 +105,16 @@ pub struct ReservePosted {
     pub reporter: Address,
     pub doc_hash: BytesN<32>,
     pub doc_uri: String,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReserveReportRetracted {
+    #[topic]
+    pub sac: Address,
+    #[topic]
+    pub tier: Tier,
+    pub reporter: Address,
 }
 
 #[contractevent]
@@ -226,6 +240,21 @@ fn write_persistent<V: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(
     env.storage()
         .persistent()
         .extend_ttl(key, PERSISTENT_THRESHOLD, PERSISTENT_EXTEND_TO);
+}
+
+fn change_reporter_score(env: &Env, reporter: &Address, increment: bool) {
+    let key = DataKey::ReporterScore(reporter.clone());
+    let score = read_persistent::<i32>(env, &key).unwrap_or(0);
+    let updated = if increment {
+        score.checked_add(1)
+    } else {
+        score.checked_sub(1)
+    };
+    let updated = match updated {
+        Some(value) => value,
+        None => panic_with_error!(env, LedgerError::ReporterScoreOutOfRange),
+    };
+    write_persistent(env, &key, &updated);
 }
 
 fn require_listed(env: &Env, sac: &Address) -> AssetRecord {
@@ -616,6 +645,7 @@ impl CoverageLedger {
             doc_uri: doc_uri.clone(),
         };
         write_persistent(&env, &key, &report);
+        change_reporter_score(&env, &reporter, true);
         bump_instance(&env);
         ReservePosted {
             sac,
@@ -628,6 +658,41 @@ impl CoverageLedger {
         }
         .publish(&env);
         tier
+    }
+
+    /// Retract the caller's latest report at the selected asset and tier.
+    pub fn retract_report(env: Env, reporter: Address, sac: Address, tier: Tier) {
+        reporter.require_auth();
+        require_not_paused(&env);
+        migrate_legacy(&env, &sac, tier);
+        let report_key = DataKey::ReportBy(sac.clone(), tier, reporter.clone());
+        if read_persistent::<ReserveReport>(&env, &report_key).is_none() {
+            panic_with_error!(&env, LedgerError::ReportNotFound);
+        }
+        let mut index = reporters(&env, &sac, tier);
+        if let Some(position) = index.first_index_of(&reporter) {
+            index.remove(position);
+        }
+        if index.is_empty() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Reporters(sac.clone(), tier));
+        } else {
+            write_persistent(&env, &DataKey::Reporters(sac.clone(), tier), &index);
+        }
+        env.storage().persistent().remove(&report_key);
+        change_reporter_score(&env, &reporter, false);
+        bump_instance(&env);
+        ReserveReportRetracted {
+            sac,
+            tier,
+            reporter,
+        }
+        .publish(&env);
+    }
+
+    pub fn get_reporter_score(env: Env, reporter: Address) -> i32 {
+        read_persistent(&env, &DataKey::ReporterScore(reporter)).unwrap_or(0)
     }
 
     pub fn get_asset(env: Env, sac: Address) -> Option<AssetRecord> {

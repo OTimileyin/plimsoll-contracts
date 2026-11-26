@@ -327,7 +327,10 @@ pasted:
 | `asset_listed` | `AAAADwAAAAxhc3NldF9saXN0ZWQ=` |
 | `supply_posted` | `AAAADwAAAA1zdXBwbHlfcG9zdGVkAAAA` |
 | `reserve_posted` | `AAAADwAAAA5yZXNlcnZlX3Bvc3RlZAAA` |
+| `reserve_report_retracted` | `AAAADwAAABhyZXNlcnZlX3JlcG9ydF9yZXRyYWN0ZWQ=` |
 | `reporter_set` | `AAAADwAAAAxyZXBvcnRlcl9zZXQ=` |
+| `reporter_uri_updated` | `AAAADwAAABRyZXBvcnRlcl91cmlfdXBkYXRlZA==` |
+| `reporter_tags_updated` | `AAAADwAAABVyZXBvcnRlcl90YWdzX3VwZGF0ZWQAAAA=` |
 | `reporter_revoked` | `AAAADwAAABByZXBvcnRlcl9yZXZva2Vk` |
 | `admin_transferred` | `AAAADwAAABFhZG1pbl90cmFuc2ZlcnJlZAAAAA==` |
 | `upgrade_proposed` | `AAAADwAAABB1cGdyYWRlX3Byb3Bvc2Vk` |
@@ -354,8 +357,8 @@ stellar events --network testnet \
 ## Snapshot tests
 
 The shape of every event above is pinned by
-[`tests/events`](../tests/events/tests/snapshots.rs). It drives the ledger and
-the vault through every event they can emit, normalises addresses, byte arrays
+[`tests/events`](../tests/events/tests/snapshots.rs). It drives all three
+contracts through every event they can emit, normalises addresses, byte arrays
 and strings to type placeholders, and compares the resulting topics and data
 to the checked-in files under [`tests/snapshots`](snapshots). A change to an
 event name, a topic's position or type, a data key, or a field's type fails

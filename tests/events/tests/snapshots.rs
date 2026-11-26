@@ -1,4 +1,4 @@
-//! Snapshot tests for the `coverage-ledger` and `covered-vault` event schemas.
+//! Snapshot tests for all Plimsoll contract event schemas.
 //!
 //! Each test drives its contract through every event it can emit, decodes the
 //! raw topics and data map the way the indexer sees them, and compares the
@@ -40,6 +40,69 @@ const UNIT: i128 = 10_000_000;
 /// in the harness does not need `stellar contract build` first.
 const UPGRADE_WASM: &[u8] =
     include_bytes!("../../../contracts/coverage-ledger/testdata/upgrade_fixture_ledger.wasm");
+
+#[test]
+fn reporter_registry_event_schema_matches_the_snapshot() {
+    let f = setup();
+    let registry = ReporterRegistryClient::new(&f.env, &f.registry_id);
+    let mut events: std::vec::Vec<EventRecord> = take(&f.env, &f.registry_id);
+
+    registry.update_reporter_uri(
+        &f.auditor,
+        &soroban_sdk::String::from_str(&f.env, "ipfs://auditor-metadata"),
+    );
+    events.extend(take(&f.env, &f.registry_id));
+
+    let mut tags = Vec::new(&f.env);
+    tags.push_back(Symbol::new(&f.env, "bank"));
+    registry.update_reporter_tags(&f.auditor, &tags);
+    events.extend(take(&f.env, &f.registry_id));
+
+    registry.revoke(&f.auditor);
+    events.extend(take(&f.env, &f.registry_id));
+
+    let next_admin = Address::generate(&f.env);
+    registry.transfer_admin(&next_admin);
+    events.extend(take(&f.env, &f.registry_id));
+
+    let wasm_hash = f
+        .env
+        .deployer()
+        .upload_contract_wasm(Bytes::from_slice(&f.env, UPGRADE_WASM));
+    registry.propose_upgrade(&wasm_hash);
+    events.extend(take(&f.env, &f.registry_id));
+    registry.cancel_upgrade();
+    events.extend(take(&f.env, &f.registry_id));
+    registry.propose_upgrade(&wasm_hash);
+    events.extend(take(&f.env, &f.registry_id));
+    f.env
+        .ledger()
+        .set_sequence_number(1_000 + plimsoll_types::UPGRADE_DELAY_LEDGERS);
+    registry.execute_upgrade();
+    events.extend(take(&f.env, &f.registry_id));
+
+    let names: std::vec::Vec<&str> = events.iter().map(|event| event.name.as_str()).collect();
+    for expected in [
+        "reporter_set",
+        "reporter_uri_updated",
+        "reporter_tags_updated",
+        "reporter_revoked",
+        "admin_transferred",
+        "upgrade_proposed",
+        "upgrade_cancelled",
+        "upgrade_executed",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "the harness did not emit {expected}; events: {names:?}"
+        );
+    }
+
+    assert_snapshot(
+        "reporter-registry.events.json",
+        &render_snapshot("reporter-registry", &events),
+    );
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct EventRecord {
@@ -325,6 +388,10 @@ fn coverage_ledger_event_schema_matches_the_snapshot() {
     );
     events.extend(take(&f.env, &f.ledger_id));
 
+    f.ledger
+        .retract_report(&f.transcriber, &f.sac, &Tier::Transcribed);
+    events.extend(take(&f.env, &f.ledger_id));
+
     // The registry address stands in as the token: enabling does not call it,
     // and the event only records the opt-in.
     f.ledger.enable_native_supply(&f.sac, &f.registry_id);
@@ -365,6 +432,7 @@ fn coverage_ledger_event_schema_matches_the_snapshot() {
         "asset_listed",
         "supply_posted",
         "reserve_posted",
+        "reserve_report_retracted",
         "native_supply_enabled",
         "paused",
         "unpaused",

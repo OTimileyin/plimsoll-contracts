@@ -92,6 +92,37 @@ fn setup() -> Fixture {
     }
 }
 
+#[test]
+fn reserve_post_increments_reporter_score_and_retraction_decrements_it() {
+    let f = listed();
+    assert_eq!(f.ledger.get_reporter_score(&f.auditor), 0);
+    f.ledger.post_reserve(
+        &f.auditor,
+        &f.sac,
+        &UNIT,
+        &T0,
+        &hash(&f.env, 7),
+        &uri(&f.env),
+    );
+    assert_eq!(f.ledger.get_reporter_score(&f.auditor), 1);
+
+    f.ledger
+        .retract_report(&f.auditor, &f.sac, &Tier::AuditorSigned);
+
+    assert_eq!(f.ledger.get_reporter_score(&f.auditor), 0);
+    assert!(f.ledger.get_reports(&f.sac).is_empty());
+}
+
+#[test]
+fn retraction_without_report_returns_report_not_found() {
+    let f = listed();
+    assert_eq!(
+        f.ledger
+            .try_retract_report(&f.auditor, &f.sac, &Tier::AuditorSigned),
+        Err(Ok(LedgerError::ReportNotFound.into()))
+    );
+}
+
 fn hash(env: &Env, byte: u8) -> BytesN<32> {
     BytesN::from_array(env, &[byte; 32])
 }

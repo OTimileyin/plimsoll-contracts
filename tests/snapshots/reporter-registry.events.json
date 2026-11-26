@@ -1,0 +1,77 @@
+{
+  "contract": "reporter-registry",
+  "events": [
+    {
+      "name": "reporter_set",
+      "topics": ["reporter_set", "<account>"],
+      "data": {
+        "name": "<string>",
+        "role": 3
+      }
+    },
+    {
+      "name": "reporter_set",
+      "topics": ["reporter_set", "<account>"],
+      "data": {
+        "name": "<string>",
+        "role": 1
+      }
+    },
+    {
+      "name": "reporter_set",
+      "topics": ["reporter_set", "<account>"],
+      "data": {
+        "name": "<string>",
+        "role": 2
+      }
+    },
+    {
+      "name": "reporter_uri_updated",
+      "topics": ["reporter_uri_updated", "<account>"],
+      "data": {
+        "uri": "<string>"
+      }
+    },
+    {
+      "name": "reporter_tags_updated",
+      "topics": ["reporter_tags_updated", "<account>"],
+      "data": {
+        "tags": ["bank"]
+      }
+    },
+    {
+      "name": "reporter_revoked",
+      "topics": ["reporter_revoked", "<account>"],
+      "data": {}
+    },
+    {
+      "name": "admin_transferred",
+      "topics": ["admin_transferred", "<account>"],
+      "data": {}
+    },
+    {
+      "name": "upgrade_proposed",
+      "topics": ["upgrade_proposed", "<bytes32>"],
+      "data": {
+        "executable_at_ledger": 18280
+      }
+    },
+    {
+      "name": "upgrade_cancelled",
+      "topics": ["upgrade_cancelled", "<bytes32>"],
+      "data": {}
+    },
+    {
+      "name": "upgrade_proposed",
+      "topics": ["upgrade_proposed", "<bytes32>"],
+      "data": {
+        "executable_at_ledger": 18280
+      }
+    },
+    {
+      "name": "upgrade_executed",
+      "topics": ["upgrade_executed", "<bytes32>"],
+      "data": {}
+    }
+  ]
+}
