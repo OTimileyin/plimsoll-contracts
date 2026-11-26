@@ -8,8 +8,6 @@ use plimsoll_types::{
 };
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    BytesN, ContractExecutable, Env, String, Symbol,
-
     Bytes, BytesN, ContractExecutable, Env, String, Symbol,
 };
 
@@ -166,7 +164,8 @@ impl ReporterRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::ReporterDisplayName(reporter.clone()));
-
+        env.storage()
+            .persistent()
             .remove(&DataKey::Metadata(reporter.clone()));
         bump_instance(&env);
         ReporterRevoked { reporter }.publish(&env);
