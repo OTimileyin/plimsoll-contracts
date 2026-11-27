@@ -676,6 +676,54 @@ impl CoverageLedger {
         tier
     }
 
+    /// Pre-flight for `post_reserve`: the error it would raise for this
+    /// reporter and asset, checked in the same order, without writing any
+    /// storage or extending any TTL. Checks that depend on the figure itself
+    /// (amount, URI, timestamps, plausibility) are not covered.
+    pub fn can_post_report(env: Env, reporter: Address, asset: Address) -> Result<(), LedgerError> {
+        if paused_flag(&env) {
+            return Err(LedgerError::Paused);
+        }
+        let record = env
+            .storage()
+            .persistent()
+            .get::<_, AssetRecord>(&DataKey::Asset(asset.clone()))
+            .ok_or(LedgerError::AssetNotListed)?;
+        let registry = RegistryClient::new(&env, &registry(&env));
+        let tier = if reporter == record.issuer {
+            Tier::IssuerSigned
+        } else {
+            match registry.role_of(&reporter) {
+                Some(Role::Auditor) => Tier::AuditorSigned,
+                Some(Role::Transcriber) => Tier::Transcribed,
+                _ => return Err(LedgerError::NotReporter),
+            }
+        };
+        // A legacy entry only exists while the tier's index is empty, so it
+        // can never fill the tier; only the index needs counting.
+        let index: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Reporters(asset.clone(), tier))
+            .unwrap_or_else(|| Vec::new(&env));
+        if !index.contains(&reporter) && index.len() >= MAX_REPORTERS_PER_TIER {
+            // Count the slots `post_reserve` would keep after reclaiming.
+            let mut kept: u32 = 0;
+            for held_by in index.iter() {
+                let key = DataKey::ReportBy(asset.clone(), tier, held_by.clone());
+                if env.storage().persistent().has(&key)
+                    && counts_for_tier(&registry, tier, &held_by)
+                {
+                    kept += 1;
+                }
+            }
+            if kept >= MAX_REPORTERS_PER_TIER {
+                return Err(LedgerError::TooManyReporters);
+            }
+        }
+        Ok(())
+    }
+
     /// Remove the caller's latest reserve report at the tier their identity
     /// resolves to, returning coverage to the next report if one exists.
     pub fn retract_reserve(env: Env, reporter: Address, sac: Address) {
