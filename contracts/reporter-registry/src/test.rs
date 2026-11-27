@@ -513,3 +513,81 @@ fn revoke_clears_stake_and_emits_stake_changed() {
     );
     assert_eq!(client.stake_of(&reporter), 0);
 }
+
+fn registered(env: &Env, client: &ReporterRegistryClient<'static>) -> Address {
+    let who = Address::generate(env);
+    client.set_reporter(&who, &Role::Auditor, &String::from_str(env, "Acme Audit"));
+    who
+}
+
+#[test]
+fn set_reporter_name_stores_the_name_under_the_reporters_authority() {
+    let (env, _admin, client) = setup();
+    let who = registered(&env, &client);
+    assert_eq!(client.get_reporter_name(&who), None);
+
+    client.set_reporter_name(&who, &Symbol::new(&env, "AcmeAudit"));
+    assert_eq!(env.auths()[0].0, who);
+    assert_eq!(
+        client.get_reporter_name(&who),
+        Some(Symbol::new(&env, "AcmeAudit"))
+    );
+
+    // A later call replaces the name.
+    client.set_reporter_name(&who, &Symbol::new(&env, "AcmeAuditLLP"));
+    assert_eq!(
+        client.get_reporter_name(&who),
+        Some(Symbol::new(&env, "AcmeAuditLLP"))
+    );
+}
+
+#[test]
+fn set_reporter_name_accepts_the_32_character_maximum() {
+    let (env, _admin, client) = setup();
+    let who = registered(&env, &client);
+    let longest = "abcdefghijklmnopqrstuvwxyz_01234";
+    assert_eq!(longest.len(), 32);
+    client.set_reporter_name(&who, &Symbol::new(&env, longest));
+    assert_eq!(
+        client.get_reporter_name(&who),
+        Some(Symbol::new(&env, longest))
+    );
+}
+
+/// The 32-character cap is the `Symbol` type's own: a 33-character name
+/// cannot be built, so it can never reach `set_reporter_name`.
+#[test]
+#[should_panic]
+fn a_display_name_over_32_characters_cannot_be_constructed() {
+    let env = Env::default();
+    let _ = Symbol::new(&env, "abcdefghijklmnopqrstuvwxyz_012345");
+}
+
+#[test]
+fn set_reporter_name_rejects_an_unregistered_reporter() {
+    let (env, _admin, client) = setup();
+    let unknown = Address::generate(&env);
+    assert_eq!(
+        client.try_set_reporter_name(&unknown, &Symbol::new(&env, "nobody")),
+        Err(Ok(RegistryError::ReporterNotFound.into()))
+    );
+    assert_eq!(client.get_reporter_name(&unknown), None);
+}
+
+#[test]
+fn reporter_name_leaves_the_existing_entry_unchanged_and_is_removed_on_revoke() {
+    let (env, _admin, client) = setup();
+    let who = registered(&env, &client);
+    let before = client.get_reporter(&who).unwrap();
+
+    client.set_reporter_name(&who, &Symbol::new(&env, "AcmeAudit"));
+    assert_eq!(client.get_reporter(&who).unwrap(), before);
+    assert_eq!(client.get_reporter_metadata(&who), None);
+
+    client.revoke(&who);
+    assert_eq!(client.get_reporter_name(&who), None);
+
+    // Re-adding the reporter does not bring the old name back.
+    client.set_reporter(&who, &Role::Auditor, &String::from_str(&env, "Acme Audit"));
+    assert_eq!(client.get_reporter_name(&who), None);
+}
