@@ -130,6 +130,7 @@ All three contracts use the same TTL policy, defined in `plimsoll-types`:
 | `Admin` (instance) | `__constructor`, `transfer_admin`, `upgrade`, `set_reporter`, `revoke`, `top_up_stake`, `reduce_stake` |
 | `Reporter(Address)` (persistent) | `set_reporter` (write), `get_reporter` / `role_of` (read) |
 | `Metadata(Address)` (persistent) | `update_reporter_metadata` (write), `get_reporter_metadata` (read) |
+| `DisplayName(Address)` (persistent) | `set_reporter_name` (write), `get_reporter_name` (read) |
 | `Stake(Address)` (persistent) | `top_up_stake`, `reduce_stake` (write), `stake_of` (read) |
 
 **coverage-ledger**
@@ -194,6 +195,7 @@ Decides who may speak. Holds no money.
 | `Admin` | instance | `Address` |
 | `Reporter(Address)` | persistent, TTL extended on write and read | `ReporterInfo` |
 | `Metadata(Address)` | persistent, TTL extended on write and read | `ReporterMetadata` |
+| `DisplayName(Address)` | persistent, TTL extended on write and read | `Symbol` |
 | `Stake(Address)` | persistent, TTL extended on write and read | `i128` |
 | `PendingUpgrade` | instance | `PendingUpgrade` |
 
@@ -210,6 +212,8 @@ Decides who may speak. Holds no money.
 | `stake_of(reporter: Address)` | — | `i128` | — | — |
 | `update_reporter_metadata(reporter: Address, name: Option<Symbol>, website_uri: Option<String>, contact_hash: Option<Bytes>)` | reporter | `()` | `ReporterNotFound`, `InvalidMetadata` (URI empty or > 256 bytes; contact hash > 64 bytes) | `reporter_metadata_updated {reporter} name, website_uri, contact_hash` |
 | `get_reporter_metadata(reporter: Address)` | — | `Option<ReporterMetadata>` | — | — |
+| `set_reporter_name(reporter: Address, name: Symbol)` | reporter | `()` | `ReporterNotFound` | — |
+| `get_reporter_name(reporter: Address)` | — | `Option<Symbol>` | — | — |
 | `role_of(reporter: Address)` | — | `Option<Role>` | — | — |
 | `get_reporter(reporter: Address)` | — | `Option<ReporterInfo>` | — | — |
 | `transfer_admin(new_admin: Address)` | admin and new_admin | `()` | — | `admin_transferred {new_admin}` |
@@ -228,6 +232,15 @@ removes both entries (and clears any tracked `Stake(Address)` entry, emitting
 `stake_changed` to `0` when the previous stake was positive). `update_reporter_metadata` replaces the whole metadata
 record: a `None` field clears that field, and the reporter must be registered.
 `set_reporter` does not touch metadata or stake.
+
+A reporter's on-chain display name is optional and lives under its own
+`DisplayName(Address)` key, so entries stored before it existed are
+unaffected and `get_reporter` keeps its shape. Only the registered reporter
+can set it, with `set_reporter_name`; calling it again replaces the name.
+The 32-character maximum is enforced by the `Symbol` type itself (a longer
+symbol cannot be constructed or passed in). `get_reporter_name` returns
+`None` until a name is set, and `revoke` removes the name with the other
+entries. `set_reporter` does not touch it.
 
 Tracked stake lives under `Stake(Address)` and defaults to `0` when absent.
 `top_up_stake` and `reduce_stake` require positive `amount` (`> 0`), and
@@ -301,6 +314,7 @@ data layouts, with real testnet examples, are in [EVENTS.md](EVENTS.md).
 | `get_supply(sac)` | — | `Option<SupplySnapshot>` | — | — |
 | `get_report(sac, tier: Tier)` | — | `Option<ReserveReport>` (the freshest report at that tier that counts) | — | — |
 | `get_reports(sac)` | — | `Vec<ReserveReport>` (every stored report that counts: strongest tier first, then first-post order within a tier) | — | — |
+| `can_post_report(reporter: Address, asset: Address)` | — | `Result<(), LedgerError>` | `Paused`, `AssetNotListed`, `NotReporter`, `TooManyReporters` | — |
 | `reporter_last_post(reporter: Address, asset: Address)` | — | `Option<u64>` (the ledger timestamp of that reporter's most recent post for the asset) | — | — |
 | `asset_reporter_pairs(cursor: Option<u32>, limit: u32)` | — | `Vec<(Address, Address)>` (up to `MAX_PAIRS_PER_CALL = 50` (asset, reporter) pairs) | — | — |
 | `coverage(sac, min_tier: Tier)` | — | `Option<Coverage>` | — | — |
@@ -341,6 +355,15 @@ Rules:
   seconds per ledger; the sequence-number bound avoids treating a fresh
   submission time as evidence that an old snapshot is fresh. A snapshot
   exactly 720 ledgers behind is accepted.
+- `can_post_report` is a read-only pre-flight for `post_reserve`. It runs
+  the checks that depend only on the reporter and the asset, in the same
+  order and with the same errors: `Paused`, `AssetNotListed`, `NotReporter`
+  (tier resolution), then `TooManyReporters` (counting only slots that
+  `post_reserve` would not reclaim). It writes no storage and extends no TTL.
+  Checks that depend on the figure itself (`InvalidAmount`, `InvalidUri`,
+  `FutureTimestamp`, `StaleReport`, `ImplausibleAmount`) are not covered,
+  so `Ok(())` means the reporter may post to the asset, not that any given
+  figure will be accepted.
 - `retract_reserve` resolves the reporter's tier exactly as `post_reserve`
   does, then removes only that reporter's stored report at that tier. If no
   such report exists, it fails with `NoReportToRetract`. Retraction frees the
@@ -561,6 +584,8 @@ vault call can surface: [ERRORS.md](ERRORS.md#vaulterror).
 | Issuer publishes monthly reserve figure | `coverage-ledger.post_reserve` (issuer account) |
 | Auditor publishes attestation | `coverage-ledger.post_reserve` (auditor) |
 | Volunteer copies a figure from a PDF report | `coverage-ledger.post_reserve` (transcriber) |
+| Front end checks a reporter may post before asking them to sign | `coverage-ledger.can_post_report` |
+| Reporter sets a human-readable name shown by the dashboard | `reporter-registry.set_reporter_name`, `get_reporter_name` |
 | Maintainer onboards an auditor / transcriber / poster | `reporter-registry.set_reporter` |
 | Maintainer removes a bad actor | `reporter-registry.revoke` (their reports stop counting at once) |
 | Dashboard shows ratio and freshness | `coverage-ledger.coverage`, `get_supply`, `get_reports` |
