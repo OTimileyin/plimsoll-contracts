@@ -23,6 +23,12 @@ const MAX_CODE_LEN: usize = 12;
 /// Most reporters whose figures one asset keeps at one tier. Bounds what
 /// `coverage` reads, and so what every `is_covered` caller pays.
 pub const MAX_REPORTERS_PER_TIER: u32 = 4;
+/// At Stellar's usual five-second ledger cadence, bounds supply snapshots to
+/// approximately one hour of age.
+pub const MAX_SUPPLY_LEDGER_AGE: u32 = 720;
+
+/// Most asset-reporter pairs one `asset_reporter_pairs` call returns.
+pub const MAX_PAIRS_PER_CALL: u32 = 50;
 
 #[contracttype]
 #[derive(Clone)]
@@ -44,6 +50,8 @@ enum DataKey {
     NativeSupply(Address),
     /// Maps a deprecated asset SAC to its successor SAC (at most one hop).
     Alias(Address),
+    /// Index of all listed asset SACs, in listing order.
+    Assets,
 }
 
 #[contracterror]
@@ -67,6 +75,8 @@ pub enum LedgerError {
     UpgradeDelayNotElapsed = 15,
     SelfAlias = 16,
     Paused = 17,
+    LedgerTooOld = 18,
+    NoReportToRetract = 19,
 }
 
 #[contractevent]
@@ -101,6 +111,17 @@ pub struct ReservePosted {
     pub reporter: Address,
     pub doc_hash: BytesN<32>,
     pub doc_uri: String,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReserveRetracted {
+    #[topic]
+    pub sac: Address,
+    #[topic]
+    pub tier: Tier,
+    pub reporter: Address,
+    pub as_of: u64,
 }
 
 #[contractevent]
@@ -235,6 +256,17 @@ fn require_listed(env: &Env, sac: &Address) -> AssetRecord {
     }
 }
 
+/// Check that `sac` is listed without deserialising its `AssetRecord`.
+fn ensure_listed(env: &Env, sac: &Address) {
+    let key = DataKey::Asset(sac.clone());
+    if !env.storage().persistent().has(&key) {
+        panic_with_error!(env, LedgerError::AssetNotListed);
+    }
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_THRESHOLD, PERSISTENT_EXTEND_TO);
+}
+
 /// Split a Stellar Asset Contract name (`CODE:GISSUER...`) into code and
 /// issuer. Returns `None` for `native` or anything malformed.
 fn parse_sac_name(env: &Env, name: &String) -> Option<(String, Address)> {
@@ -255,6 +287,10 @@ fn parse_sac_name(env: &Env, name: &String) -> Option<(String, Address)> {
 
 fn reporters(env: &Env, sac: &Address, tier: Tier) -> Vec<Address> {
     read_persistent(env, &DataKey::Reporters(sac.clone(), tier)).unwrap_or_else(|| Vec::new(env))
+}
+
+fn assets(env: &Env) -> Vec<Address> {
+    read_persistent(env, &DataKey::Assets).unwrap_or_else(|| Vec::new(env))
 }
 
 /// Every stored report at `tier`: a not-yet-migrated v0.1 entry first, then
@@ -342,17 +378,23 @@ fn effective_supply(env: &Env, sac: &Address) -> Option<SupplyFigure> {
     })
 }
 
+/// Whether a reporter at `tier` still counts: issuer-signed reports always
+/// count, while auditor and transcriber reports require the matching role.
+fn counts_for_tier(registry: &RegistryClient, tier: Tier, reporter: &Address) -> bool {
+    let needed = match tier {
+        Tier::IssuerSigned => return true,
+        Tier::AuditorSigned => Role::Auditor,
+        Tier::Transcribed => Role::Transcriber,
+    };
+    registry.role_of(reporter) == Some(needed)
+}
+
 /// Whether a stored report still counts: its reporter must still be entitled
 /// to its tier. Issuer-signed reports always count; the issuer is fixed by the
 /// asset record. A revoked auditor or transcriber, or one whose role changed,
 /// no longer speaks for the figures they posted.
 fn counts(registry: &RegistryClient, report: &ReserveReport) -> bool {
-    let needed = match report.tier {
-        Tier::IssuerSigned => return true,
-        Tier::AuditorSigned => Role::Auditor,
-        Tier::Transcribed => Role::Transcriber,
-    };
-    registry.role_of(&report.reporter) == Some(needed)
+    counts_for_tier(registry, report.tier, &report.reporter)
 }
 
 /// The freshest counting report in `candidates`.
@@ -427,11 +469,8 @@ fn reclaim_slots(
     let mut kept = Vec::new(env);
     for reporter in index.iter() {
         let key = DataKey::ReportBy(sac.clone(), tier, reporter.clone());
-        let keep = env
-            .storage()
-            .persistent()
-            .get::<_, ReserveReport>(&key)
-            .is_some_and(|report| counts(registry, &report));
+        let keep =
+            env.storage().persistent().has(&key) && counts_for_tier(registry, tier, &reporter);
         if keep {
             kept.push_back(reporter);
         } else {
@@ -479,6 +518,9 @@ impl CoverageLedger {
             listed_at: env.ledger().timestamp(),
         };
         write_persistent(&env, &key, &record);
+        let mut index = assets(&env);
+        index.push_back(sac.clone());
+        write_persistent(&env, &DataKey::Assets, &index);
         bump_instance(&env);
         AssetListed { sac, code, issuer }.publish(&env);
         record
@@ -499,12 +541,16 @@ impl CoverageLedger {
         if role != Some(Role::SupplyPoster) {
             panic_with_error!(&env, LedgerError::NotSupplyPoster);
         }
-        require_listed(&env, &sac);
+        ensure_listed(&env, &sac);
         if amount < 0 {
             panic_with_error!(&env, LedgerError::InvalidAmount);
         }
-        if ledger > env.ledger().sequence() {
+        let current_ledger = env.ledger().sequence();
+        if ledger > current_ledger {
             panic_with_error!(&env, LedgerError::FutureLedger);
+        }
+        if current_ledger - ledger > MAX_SUPPLY_LEDGER_AGE {
+            panic_with_error!(&env, LedgerError::LedgerTooOld);
         }
         let key = DataKey::Supply(sac.clone());
         if let Some(previous) = read_persistent::<SupplySnapshot>(&env, &key) {
@@ -630,6 +676,55 @@ impl CoverageLedger {
         tier
     }
 
+    /// Remove the caller's latest reserve report at the tier their identity
+    /// resolves to, returning coverage to the next report if one exists.
+    pub fn retract_reserve(env: Env, reporter: Address, sac: Address) {
+        reporter.require_auth();
+        let asset = require_listed(&env, &sac);
+        let tier = if reporter == asset.issuer {
+            Tier::IssuerSigned
+        } else {
+            match RegistryClient::new(&env, &registry(&env)).role_of(&reporter) {
+                Some(Role::Auditor) => Tier::AuditorSigned,
+                Some(Role::Transcriber) => Tier::Transcribed,
+                _ => panic_with_error!(&env, LedgerError::NotReporter),
+            }
+        };
+
+        migrate_legacy(&env, &sac, tier);
+        let report_key = DataKey::ReportBy(sac.clone(), tier, reporter.clone());
+        let report = match read_persistent::<ReserveReport>(&env, &report_key) {
+            Some(report) if report.reporter == reporter => report,
+            _ => panic_with_error!(&env, LedgerError::NoReportToRetract),
+        };
+        let mut index = reporters(&env, &sac, tier);
+        if let Some(i) = index
+            .iter()
+            .position(|indexed| indexed == reporter)
+            .and_then(|i| u32::try_from(i).ok())
+        {
+            index.remove(i);
+        } else {
+            panic_with_error!(&env, LedgerError::NoReportToRetract);
+        }
+
+        env.storage().persistent().remove(&report_key);
+        let index_key = DataKey::Reporters(sac.clone(), tier);
+        if index.is_empty() {
+            env.storage().persistent().remove(&index_key);
+        } else {
+            write_persistent(&env, &index_key, &index);
+        }
+        bump_instance(&env);
+        ReserveRetracted {
+            sac,
+            tier,
+            reporter,
+            as_of: report.as_of,
+        }
+        .publish(&env);
+    }
+
     pub fn get_asset(env: Env, sac: Address) -> Option<AssetRecord> {
         read_persistent(&env, &DataKey::Asset(sac))
     }
@@ -647,8 +742,8 @@ impl CoverageLedger {
         if old == new {
             panic_with_error!(&env, LedgerError::SelfAlias);
         }
-        require_listed(&env, &old);
-        require_listed(&env, &new);
+        ensure_listed(&env, &old);
+        ensure_listed(&env, &new);
         write_persistent(&env, &DataKey::Alias(old.clone()), &new);
         bump_instance(&env);
         AssetAliased { old, new }.publish(&env);
@@ -673,6 +768,89 @@ impl CoverageLedger {
             for report in reports_at(&env, &sac, tier).iter() {
                 if counts(&registry, &report) {
                     out.push_back(report);
+                }
+            }
+        }
+        out
+    }
+
+    /// When `reporter` most recently posted a reserve figure for `asset`: the
+    /// ledger timestamp of that post (`posted_at`), not the figure's `as_of`.
+    ///
+    /// Every tier is searched, so a reporter whose role changed answers with
+    /// whichever of their posts is later, and a not-yet-migrated v0.1 entry
+    /// counts as one of their posts too. The registry is not consulted: a
+    /// revoked reporter's posts remain history, and `get_reports` already says
+    /// which of them still count. `None` when `reporter` has never posted for
+    /// `asset`.
+    pub fn reporter_last_post(env: Env, reporter: Address, asset: Address) -> Option<u64> {
+        let mut last: Option<u64> = None;
+        let mut note = |posted_at: u64| {
+            if last.is_none_or(|seen| posted_at > seen) {
+                last = Some(posted_at);
+            }
+        };
+        for tier in Tier::ALL_DESC {
+            if let Some(legacy) =
+                read_persistent::<ReserveReport>(&env, &DataKey::Report(asset.clone(), tier))
+            {
+                if legacy.reporter == reporter {
+                    note(legacy.posted_at);
+                }
+            }
+            if let Some(report) = read_persistent::<ReserveReport>(
+                &env,
+                &DataKey::ReportBy(asset.clone(), tier, reporter.clone()),
+            ) {
+                note(report.posted_at);
+            }
+        }
+        last
+    }
+
+    /// A page of the (asset, reporter) pairs the ledger holds figures for, so
+    /// an indexer can bootstrap its dataset without walking every asset.
+    ///
+    /// Pairs come from the stored per-tier reporter indexes, so no registry
+    /// call is made: a reporter whose figure no longer counts still appears,
+    /// and `get_reports` / `reporter_last_post` say what they posted. A
+    /// reporter with an entry at more than one tier appears once per asset.
+    ///
+    /// Order: assets in listing order, and within an asset the tiers strongest
+    /// first (`AuditorSigned`, `IssuerSigned`, `Transcribed`), first-post
+    /// order within a tier. `cursor` is the index of the first pair to return
+    /// and defaults to `0`; `limit` is capped at `MAX_PAIRS_PER_CALL = 50`.
+    /// An empty page means the cursor is at or past the last pair. Listings
+    /// and first posts only ever grow the sequence, so a bootstrap that must
+    /// be exact should re-read from `0` or dedupe by pair.
+    pub fn asset_reporter_pairs(
+        env: Env,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Vec<(Address, Address)> {
+        let start = cursor.unwrap_or(0);
+        let page = limit.min(MAX_PAIRS_PER_CALL);
+        let mut out = Vec::new(&env);
+        if page == 0 {
+            return out;
+        }
+        let mut index = 0u32;
+        for asset in assets(&env).iter() {
+            let mut reported = Vec::new(&env);
+            for tier in Tier::ALL_DESC {
+                for reporter in reporters(&env, &asset, tier).iter() {
+                    if reported.contains(&reporter) {
+                        continue;
+                    }
+                    reported.push_back(reporter.clone());
+                    if index < start {
+                        index += 1;
+                        continue;
+                    }
+                    out.push_back((asset.clone(), reporter));
+                    if out.len() == page {
+                        return out;
+                    }
                 }
             }
         }
@@ -776,7 +954,7 @@ impl CoverageLedger {
     /// the posted snapshot. The snapshot is kept as the fallback.
     pub fn enable_native_supply(env: Env, sac: Address, token: Address) {
         admin(&env).require_auth();
-        require_listed(&env, &sac);
+        ensure_listed(&env, &sac);
         write_persistent(&env, &DataKey::NativeSupply(sac.clone()), &token);
         bump_instance(&env);
         NativeSupplyEnabled { sac, token }.publish(&env);

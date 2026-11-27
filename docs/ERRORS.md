@@ -54,11 +54,11 @@ codes as literal numbers, so a renumbering fails CI.
 | ---: | --- | --- | --- |
 | 1 | [`ReporterNotFound`](#1-reporternotfound) | [`NotAStellarAsset`](#1-notastellarasset) | [`InvalidAmount`](#1-invalidamount) |
 | 2 | [`InvalidName`](#2-invalidname) | [`AlreadyListed`](#2-alreadylisted) | [`NotCovered`](#2-notcovered) |
-| 3 | | [`AssetNotListed`](#3-assetnotlisted) | [`InsufficientBalance`](#3-insufficientbalance) |
-| 4 | | [`NotSupplyPoster`](#4-notsupplyposter) | |
-| 5 | | [`NotReporter`](#5-notreporter) | |
-| 6 | | [`InvalidAmount`](#6-invalidamount) | |
-| 7 | | [`FutureLedger`](#7-futureledger) | |
+| 3 | `UpgradeNotProposed` | [`AssetNotListed`](#3-assetnotlisted) | [`InsufficientBalance`](#3-insufficientbalance) |
+| 4 | `UpgradeDelayNotElapsed` | [`NotSupplyPoster`](#4-notsupplyposter) | |
+| 5 | [`InvalidMetadata`](#5-invalidmetadata) | [`NotReporter`](#5-notreporter) | |
+| 6 | [`InvalidStakeAmount`](#6-invalidstakeamount) | [`InvalidAmount`](#6-invalidamount) | |
+| 7 | [`InsufficientStake`](#7-insufficientstake) | [`FutureLedger`](#7-futureledger) | |
 | 8 | | [`StaleLedger`](#8-staleledger) | |
 | 9 | | [`FutureTimestamp`](#9-futuretimestamp) | |
 | 10 | | [`StaleReport`](#10-stalereport) | |
@@ -67,12 +67,16 @@ codes as literal numbers, so a renumbering fails CI.
 | 13 | | [`TooManyReporters`](#13-toomanyreporters) | |
 | 14 | | [`UpgradeNotProposed`](#14-upgradenotproposed) | |
 | 15 | | [`UpgradeDelayNotElapsed`](#15-upgradedelaynotelapsed) | |
-| 16 | | [`Paused`](#16-paused) | |
+| 16 | | [`SelfAlias`](#16-selfalias) | |
+| 17 | | [`Paused`](#17-paused) | |
+| 18 | | [`LedgerTooOld`](#18-ledgertooold) | |
+| 19 | | [`NoReportToRetract`](#19-noreporttoretract) | |
 
 ## RegistryError
 
-Raised by `reporter-registry`. Both functions that can fail are admin-only,
-so these errors reach maintainers rather than end users.
+Raised by `reporter-registry`. The role and upgrade errors are admin-only, so
+they reach maintainers rather than end users; `InvalidMetadata` is raised to a
+registered reporter updating their own entry.
 
 ### 1 `ReporterNotFound`
 
@@ -91,6 +95,29 @@ so these errors reach maintainers rather than end users.
   exceed it.
 - **Remedy:** Use a short, non-empty display name of 1 to 64 bytes.
 
+### 5 `InvalidMetadata`
+
+- **Raised by:** `update_reporter_metadata(reporter, name, website_uri,
+  contact_hash)`.
+- **Cause:** `Some(website_uri)` is empty or longer than 256 bytes, or
+  `Some(contact_hash)` is empty or longer than 64 bytes. A `None` field is not
+  an error; it clears that field.
+- **Remedy:** Shorten the URL or omit those fields. The `name` field is a
+  `Symbol` and is already limited to 32 bytes by the host.
+
+### 6 `InvalidStakeAmount`
+
+- **Raised by:** `top_up_stake(reporter, amount)`, `reduce_stake(reporter, amount)`.
+- **Cause:** `amount` is zero or negative, or adding `amount` to the existing
+  stake would overflow `i128`.
+- **Remedy:** Pass a strictly positive `amount` within `i128` bounds.
+
+### 7 `InsufficientStake`
+
+- **Raised by:** `reduce_stake(reporter, amount)`.
+- **Cause:** `amount` exceeds the reporter's currently tracked stake (`stake_of`).
+- **Remedy:** Query `stake_of(reporter)` and reduce by at most that amount.
+
 ## LedgerError
 
 Raised by `coverage-ledger`. Each write checks its errors in a fixed order, so
@@ -99,8 +126,9 @@ when several apply the caller sees the first:
 | Function | Order checked |
 | --- | --- |
 | `list_asset` | `NotAStellarAsset` (not a SAC), `AlreadyListed`, `NotAStellarAsset` (SAC name has no issuer) |
-| `post_supply` | auth, `Paused`, `NotSupplyPoster`, `AssetNotListed`, `InvalidAmount`, `FutureLedger`, `StaleLedger` |
+| `post_supply` | auth, `Paused`, `NotSupplyPoster`, `AssetNotListed`, `InvalidAmount`, `FutureLedger`, `LedgerTooOld`, `StaleLedger` |
 | `post_reserve` | auth, `Paused`, `AssetNotListed`, `NotReporter`, `InvalidAmount`, `InvalidUri`, `FutureTimestamp`, `ImplausibleAmount`, `StaleReport`, `TooManyReporters` |
+| `retract_reserve` | auth, `AssetNotListed`, `NotReporter`, `NoReportToRetract` |
 | `enable_native_supply` | auth, `AssetNotListed` |
 
 ### 1 `NotAStellarAsset`
@@ -253,7 +281,7 @@ when several apply the caller sees the first:
   `upgrade_proposed` is the intended signal to raise an alarm before that
   ledger closes.
 
-### 16 `Paused`
+### 17 `Paused`
 
 - **Raised by:** `post_supply`, `post_reserve`, `is_covered`.
 - **Cause:** An admin called `pause()` and has not called `unpause()` yet.
@@ -263,6 +291,25 @@ when several apply the caller sees the first:
   to `unpause()`, or read `is_paused()` and `coverage_status(...)` first and
   show the paused state in the UI. `coverage`, `get_supply`, `get_reports`
   and `coverage_status` keep working while paused.
+
+### 18 `LedgerTooOld`
+
+- **Raised by:** `post_supply(poster, sac, amount, ledger, breakdown_hash)`.
+- **Cause:** `ledger` is more than 720 ledgers behind the current ledger
+  (approximately one hour at Stellar's usual five-second ledger cadence).
+  `post_supply` stores the submission time, so without this sequence bound an
+  old figure could be presented as a fresh snapshot.
+- **Remedy:** Recompute supply from a recent ledger and post its sequence.
+  Exactly 720 ledgers of lag is accepted.
+
+### 19 `NoReportToRetract`
+
+- **Raised by:** `retract_reserve(reporter, sac)`.
+- **Cause:** The authorised reporter has no stored report for the tier their
+  identity currently resolves to. This includes signing with a different
+  reporter address, even when another reporter has a report at that tier.
+- **Remedy:** Sign with the address that posted the report, and confirm the
+  report still exists at the reporter's current tier.
 
 ## VaultError
 
